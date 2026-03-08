@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Bottle-to-WiFi Vendo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="assets/style.css">
+  <style>
+    .panel { display:none; }
+    .panel.active { display:block; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; }
+    .row button { flex:1; min-width:140px; }
+    .small { font-size:0.9em; opacity:0.9; }
+    input[type="number"] { width:100%; padding:12px; border-radius:10px; border:1px solid #444; background:#111; color:#fff; margin:8px 0; }
+    .danger { background:#b00020; }
+  </style>
+</head>
+<body>
+
+  <!-- MikroTik "sendin" login form: DO NOT REMOVE -->
+  <form name="sendin" action="$(link-login-only)" method="post" style="display:none">
+    <input type="hidden" name="username" value="$(mac)">
+    <input type="hidden" name="password" value="$(mac)">
+  </form>
+
+  <div class="container">
+    <div class="title-logo">
+      <img src="assets/logo.png" alt="PETNET Logo">
+    </div>
+
+    <div class="status-box" id="sysStatus">System Ready</div>
+
+    <!-- USER PANEL -->
+    <div id="userPanel" class="panel active">
+
+      <!-- Step: main -->
+      <div id="userStepMain" class="panel active">
+        <button onclick="requestLock()">CONNECT</button>
+      </div>
+
+      <!-- Step: welcome -->
+      <div id="userStepWelcome" class="panel">
+        <div class="stat-box">
+          <div class="stat-row">
+            <span>Bottles</span><b id="bCount">0</b>
+          </div>
+          <div class="stat-row">
+            <span>Cans</span><b id="cCount">0</b>
+          </div>
+          <div class="stat-row">
+            <span>Total minutes</span><b id="tMins">0</b>
+          </div>
+        </div>
+
+        <div class="row">
+          <button onclick="goSelect()">DROP ITEM</button>
+          <button onclick="connectInternet()">CONNECT</button>
+        </div>
+
+        <div style="height:10px"></div>
+        <button class="danger" onclick="endSession()">END SESSION</button>
+	<p class="small">Timeout in: <b id="timeoutText">60</b>s</p>
+      </div>
+
+      <!-- Step: select -->
+      <div id="userStepSelect" class="panel">
+        <div class="row">
+          <button onclick="drop('A')">DROP BOTTLE</button>
+          <button onclick="drop('B')">DROP CAN</button>
+        </div>
+        <div style="height:10px"></div>
+        <button onclick="backToWelcome()">BACK</button>
+      </div>
+
+      <!-- Step: authorizing -->
+      <div id="userStepAuth" class="panel">
+      </div>
+    </div>
+
+    <!-- ADMIN PANEL (shown only when TFT arms it) -->
+    <div id="adminPanel" class="panel">
+
+      <!-- ADMIN LOGIN -->
+     <div id="adminLoginBox">
+       <input id="adminPass" type="password" placeholder="Admin password">
+       <div class="row">
+         <button onclick="adminLogin()">LOGIN</button>
+         <button class="danger" onclick="exitAdmin()">CANCEL</button>
+       </div>
+     </div>
+
+     <!-- ADMIN SETTINGS -->
+     <div id="adminSettingsBox" style="display:none;">
+  
+       <p class="small">Minutes per bottle</p>
+       <input id="rateBottle" type="number" min="0" max="999" step="1" value="15">
+   
+       <p class="small">Minutes per can</p>
+       <input id="rateCan" type="number" min="0" max="999" step="1" value="30">
+   
+       <hr style="opacity:0.2">
+   
+       <p class="small">Change admin password</p>
+       <input id="newPass" type="password" placeholder="New password">
+       <input id="newPass2" type="password" placeholder="Confirm new password">
+  
+       <div class="row">
+         <button onclick="saveAdmin()">SAVE</button>
+         <button class="danger" onclick="exitAdmin()">EXIT ADMIN</button>
+       </div>
+    </div>
+   </div>
+  </div>
+
+  <script>
+    // ===== SETTINGS =====
+    const ESP32_HOST = "http://10.0.0.100";
+    const macAddr = "$(mac)";
+    const stateKey = "vendo_state_" + macAddr;
+    const TIMEOUT_SECONDS = 60;
+    let remainingSec = TIMEOUT_SECONDS;
+    let timeoutTick = null;
+
+    function showPanel(id) {
+      document.getElementById("userPanel").classList.remove("active");
+      document.getElementById("adminPanel").classList.remove("active");
+      document.getElementById(id).classList.add("active");
+    }
+    function setStatus(msg) {
+      document.getElementById("sysStatus").innerText = msg;
+    }
+    function showUserStep(stepId) {
+      ["userStepMain","userStepWelcome","userStepSelect","userStepAuth"].forEach(id => {
+        document.getElementById(id).classList.remove("active");
+      });
+      document.getElementById(stepId).classList.add("active");
+
+     // Update the SINGLE status box based on step
+     if (stepId === "userStepMain") setStatus("System Ready");
+     else if (stepId === "userStepWelcome") setStatus("Session Active");
+     else if (stepId === "userStepSelect") setStatus("Please choose item to scan");
+     else if (stepId === "userStepAuth") setStatus("Authorizing...");
+     }
+
+    function renderTimeout() {
+      const el = document.getElementById("timeoutText");
+      if (el) el.innerText = String(remainingSec);
+    }
+
+    // Call this whenever user does something meaningful (esp. successful drop)
+    function resetTimeout() {
+      remainingSec = TIMEOUT_SECONDS;
+      renderTimeout();
+    }
+
+    function startTimeout() {
+      stopTimeout();
+      resetTimeout();
+      timeoutTick = setInterval(async () => {
+        // Only count down while user is in a locked session
+        const locked = (localStorage.getItem(stateKey) === "locked");
+        if (!locked) { resetTimeout(); return; }
+   
+       // Only count down on welcome/select steps (not auth)
+       const onWelcome = document.getElementById("userStepWelcome")?.classList.contains("active");
+       const onSelect  = document.getElementById("userStepSelect")?.classList.contains("active");
+       if (!onWelcome && !onSelect) return;
+
+       remainingSec -= 1;
+       renderTimeout();
+
+       if (remainingSec <= 0) {
+         // Auto unlock and go home
+         setStatus("Session timed out.");
+         await endSession(true); // pass a flag so we don't ask confirm
+       }
+     }, 1000);
+   }
+
+    function stopTimeout() {
+      if (timeoutTick) clearInterval(timeoutTick);
+      timeoutTick = null;
+    }
+
+    async function safeFetchJson(url) {
+      const res = await fetch(url, { cache: "no-store" });
+      return await res.json();
+    }
+
+    // ===== ADMIN MODE AUTO-DETECT (driven by TFT) =====
+    let adminPoll = null;
+
+   async function checkAdminMode() {
+     try {
+       const st = await safeFetchJson(`${ESP32_HOST}/admin/state`);
+       // Expected:
+       // { armed:true/false, enabled:true/false }
+
+       if (st && st.armed === true) {
+         showPanel("adminPanel");
+
+         // If not enabled yet, show password gate
+         if (st.enabled !== true) {
+           document.getElementById("adminLoginBox").style.display = "block";
+           document.getElementById("adminSettingsBox").style.display = "none";
+           setStatus("ADMIN MODE");
+         } else {
+           document.getElementById("adminLoginBox").style.display = "none";
+           document.getElementById("adminSettingsBox").style.display = "block";
+           setStatus("ADMIN MODE");
+           await loadRates(); // loads bottle/can values
+         }
+       } else {
+         // Not armed => normal user portal
+         showPanel("userPanel");
+       }
+  
+    } catch (e) {
+       showPanel("userPanel");
+     }
+   }
+
+   async function adminLogin() {
+     const pass = document.getElementById("adminPass").value || "";
+     if (pass.length < 1) {
+       setStatus("ADMIN MODE");
+       return;
+     }
+     setStatus("Checking password...");
+     try {
+       const r = await safeFetchJson(`${ESP32_HOST}/admin/login?pass=${encodeURIComponent(pass)}`);
+       if (r.ok) {
+         document.getElementById("adminPass").value = "";
+         document.getElementById("adminLoginBox").style.display = "none";
+         document.getElementById("adminSettingsBox").style.display = "block";
+         await loadRates();
+         document.getElementById("adminStatus").innerText = "Admin mode enabled";
+       } else {
+         document.getElementById("adminGateStatus").innerText = "Wrong password";
+       }
+     } catch (e) {
+       document.getElementById("adminGateStatus").innerText = "Hardware offline.";
+     }
+   }
+
+   async function saveAdmin() {
+     const bottle = parseInt(document.getElementById("rateBottle").value || "0", 10);
+     const can = parseInt(document.getElementById("rateCan").value || "0", 10);
+
+     const p1 = document.getElementById("newPass").value || "";
+     const p2 = document.getElementById("newPass2").value || "";
+
+     // password change optional
+     if (p1.length > 0 || p2.length > 0) {
+       if (p1.length < 4) {
+         setStatus("Password too short (min 4).");
+         return;
+       }
+       if (p1 !== p2) {
+         setStatus("Password mismatch.");
+         return;
+       }
+     }
+     setStatus("Saving...");
+     try {
+       // Send rates + optional new password
+       let url = `${ESP32_HOST}/admin/set?bottle=${bottle}&can=${can}`;
+       if (p1.length > 0) url += `&newpass=${encodeURIComponent(p1)}`;
+
+       const r = await safeFetchJson(url);
+       if (r.ok) {
+         setStatus("Saved!");
+         document.getElementById("newPass").value = "";
+         document.getElementById("newPass2").value = "";
+        } else {
+         setStatus("Failed: " + (r.msg || ""));
+       }
+     } catch (e) {
+       setStatus("Hardware offline.");
+     }
+   }
+
+    function startAdminPolling() {
+      if (adminPoll) clearInterval(adminPoll);
+      checkAdminMode();
+      adminPoll = setInterval(checkAdminMode, 1500);
+    }
+
+    // ===== TFT UI CONTROL (background-only placeholders) =====
+    async function callUI(screen) {
+      // screen: home, welcome, select, scanning
+      try {
+        await fetch(`${ESP32_HOST}/ui?screen=${encodeURIComponent(screen)}&mac=${encodeURIComponent(macAddr)}`, { cache: "no-store" });
+      } catch (e) {}
+    }
+
+    // ===== USER FLOW =====
+    async function requestLock() {
+      document.getElementById("sysStatus").innerText = "Requesting lock...";
+      try {
+        const data = await safeFetchJson(`${ESP32_HOST}/start?mac=${encodeURIComponent(macAddr)}`);
+        if (data.status === "GO") {
+          localStorage.setItem(stateKey, "locked");
+          showUserStep("userStepWelcome");
+          await callUI("welcome");    // TFT: WELCOME background placeholder
+          startPolling();
+          startTimeout();
+        } else {
+          document.getElementById("sysStatus").innerText = "Machine in use.";
+        }
+      } catch (e) {
+        document.getElementById("sysStatus").innerText = "Hardware offline.";
+      }
+    }
+
+    async function goSelect() {
+      showUserStep("userStepSelect");
+      await callUI("select");        // TFT: SELECT background placeholder
+      resetTimeout();
+    }
+
+    async function backToWelcome() {
+      showUserStep("userStepWelcome");
+      await callUI("welcome");
+      resetTimeout();
+    }
+
+    async function drop(mode) {
+      try {
+        await callUI("scanning");
+
+        const data = await safeFetchJson(`${ESP32_HOST}/drop?mac=${encodeURIComponent(macAddr)}&mode=${mode}`);
+        if (data.ok === true) {
+          // Successful start of scan => reset timeout
+          resetTimeout();
+          // optional: auto-return to welcome while scan happens
+          // showUserStep("userStepWelcome");
+          return;
+        }
+
+        alert(data.msg || "Cannot start scan.");
+        await callUI("select");
+      } catch (e) {
+        alert("Hardware offline.");
+      }
+    }
+
+    async function connectInternet() {
+      showUserStep("userStepAuth");
+      setStatus("Computing time...");
+      try {
+        const data = await safeFetchJson(`${ESP32_HOST}/finalize?mac=${encodeURIComponent(macAddr)}`);
+        if (!data.ok) {
+          setStatus(data.msg || "Cannot authorize.");
+          setTimeout(() => showUserStep("userStepWelcome"), 1200);
+          return;
+        }
+
+        // MikroTik auth: user=MAC, pass=minutes
+        document.sendin.username.value = data.mac;
+        document.sendin.password.value = data.time;
+
+        setStatus(`AUTHORIZED: ${data.time} minutes`);
+        localStorage.removeItem(stateKey);
+        setTimeout(() => document.sendin.submit(), 1200);
+      } catch (e) {
+        setStatus("Hardware offline.");
+        setTimeout(() => showUserStep("userStepWelcome"), 1200);
+      }
+    }
+
+    async function endSession(isAuto=false) {
+       if (!isAuto) {
+        if (!confirm("End session?")) return;
+      }
+    
+      try { await safeFetchJson(`${ESP32_HOST}/end?mac=${encodeURIComponent(macAddr)}`); } catch (e) {}
+   
+      localStorage.removeItem(stateKey);
+      stopPolling();
+      stopTimeout();
+
+      showUserStep("userStepMain");
+      setStatus(isAuto ? "System Ready (timed out)" : "System Ready");
+ 
+      await callUI("home"); // TFT back to HOME
+    }
+
+    // ===== STATUS POLLING =====
+    let pollTimer = null;
+
+    function startPolling() {
+      stopPolling();
+      pollOnce();
+      pollTimer = setInterval(pollOnce, 1200);
+    }
+    function stopPolling() {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
+    }
+
+    async function pollOnce() {
+      try {
+        const s = await safeFetchJson(`${ESP32_HOST}/status?mac=${encodeURIComponent(macAddr)}`);
+        if (!s.ok) return;
+        document.getElementById("bCount").innerText = s.bottles;
+        document.getElementById("cCount").innerText = s.cans;
+        document.getElementById("tMins").innerText = s.totalMinutes;
+      } catch (e) {}
+    }
+
+    // ===== ADMIN ACTIONS (only visible when TFT enables admin) =====
+    async function loadRates() {
+      setStatus("Loading rates...");
+      try {
+        const r = await safeFetchJson(`${ESP32_HOST}/rates`);
+        if (r.ok) {
+          document.getElementById("rateBottle").value = r.bottle;
+          document.getElementById("rateCan").value = r.can;
+          setStatus("ADMIN MODE");
+        } else {
+          setStatus("Cannot read rates.");
+        }
+      } catch (e) {
+        setStatus("Hardware offline.");
+      }
+    }
+
+    async function saveRates() {
+      const bottle = parseInt(document.getElementById("rateBottle").value || "0", 10);
+      const can = parseInt(document.getElementById("rateCan").value || "0", 10);
+
+      try {
+        const r = await safeFetchJson(`${ESP32_HOST}/admin/set?bottle=${bottle}&can=${can}`);
+        document.getElementById("adminStatus").innerText = r.ok ? "Saved!" : ("Failed: " + (r.msg || ""));
+      } catch (e) {
+        document.getElementById("adminStatus").innerText = "Hardware offline.";
+      }
+    }
+
+   async function exitAdmin() {
+     try { await safeFetchJson(`${ESP32_HOST}/admin/exit`); } catch (e) {}
+     showPanel("userPanel");
+     
+     // restore correct user dialog text
+     const locked = (localStorage.getItem(stateKey) === "locked");
+     if (locked) showUserStep("userStepWelcome");
+     else showUserStep("userStepMain");
+   }
+
+    // ===== STARTUP =====
+    window.onload = async () => {
+      // Always start watching admin mode (driven by TFT long-press)
+      startAdminPolling();
+
+      // Resume user session if it was locked before refresh
+      if (localStorage.getItem(stateKey) === "locked") {
+        showUserStep("userStepWelcome");
+        startPolling();
+        startTimeout();
+      } else {
+        showUserStep("userStepMain");
+      }
+    };
+  </script>
+</body>
+</html>

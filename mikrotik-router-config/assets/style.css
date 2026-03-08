@@ -1,0 +1,108 @@
+body {
+    background-color: #0a0a0c;
+    color: #00ffcc;
+    font-family: 'Arial Black', Courier, monospace;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    overscroll-behavior-y: contain;
+}
+
+.container {
+    background: #111116;
+    padding: 40px;
+    border: 3px solid #00ffcc;
+    border-radius: 12px;
+    box-shadow: 0 0 20px rgba(0, 255, 204, 0.2);
+    text-align: center;
+    width: 320px;
+}
+
+h2 {
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    border-bottom: 1px dashed #00ffcc;
+    padding-bottom: 10px;
+    font-size: 1.5em;
+}
+
+button {
+    width: 100%;
+    padding: 15px;
+    margin: 10px 0;
+    border: 1.5px solid #00ffcc;
+    border-radius: 6px;
+    font-weight: bold;
+    font-family: 'Courier New', Courier, monospace;
+    cursor: pointer;
+    background-color: transparent;
+    color: #00ffcc;
+    transition: all 0.3s ease;
+    -webkit-touch-callout: none; 
+}
+
+button:hover {
+    background-color: #00ffcc;
+    color: #0a0a0c;
+    box-shadow: 0 0 20px #00ffcc;
+}
+
+.step { 
+    display: none; 
+}
+
+.step.active { 
+    display: block; 
+    animation: scanline 0.4s ease-out;
+}
+
+.status-box {
+    padding: 15px;
+    border: 1px solid #333;
+    margin-bottom: 20px;
+    color: #fff;
+    font-size: 0.9em;
+    line-height: 1.4;
+    background: rgba(255, 255, 255,0.1);
+}
+
+/* Separate style from the main dialog/status-box */
+.stat-box{
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin: 10px 0;
+  background: rgba(0,0,0,0.35);
+  backdrop-filter: blur(2px);
+}
+.stat-row{
+  display:flex;
+  justify-content: space-between;
+  align-items:center;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.12);
+}
+.stat-row:last-child{ border-bottom:none; }
+.stat-row span{ opacity:0.9; }
+.stat-row b{ font-size: 1.1em; }
+
+.title-logo{
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  margin: 6px 0 12px 0;
+}
+
+.title-logo img{
+  width: 55%;
+  max-width: 220px;
+  height: auto;
+  display:block;
+}
+
+@keyframes scanline {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}

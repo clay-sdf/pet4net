@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Status - WiFi Vendo</title>
+    <link rel="stylesheet" href="assets/style.css">
+    $(if refresh-timeout)<meta http-equiv="refresh" content="$(refresh-timeout-secs)">$(endif)
+</head>
+<body>
+    <div class="container">
+        <h2>Connected!</h2>
+        <p>IP: $(ip)</p>
+        <p>Bytes Up/Down: $(bytes-in-nice) / $(bytes-out-nice)</p>
+        $(if session-time-left)
+        <p>Time Left: <strong>$(session-time-left)</strong></p>
+        $(endif)
+        <form action="$(link-logout)" name="logout" onSubmit="return openLogout()">
+            <button type="submit" class="btn-stop">Log Out</button>
+        </form>
+    </div>
+</body>
+</html>
